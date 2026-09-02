@@ -6,19 +6,20 @@ const wsServer = require('./websocket/wsServer');
 const robotState = require('./state/robotState');
 const config = require('./config');
 
-const PORT = config.port;
+const PORT = parseInt(process.env.PORT || config.port || '3000', 10);
+const HOST = '0.0.0.0';
 
 async function main() {
-  // Create HTTP server and attach WebSocket
+  // Create HTTP server and attach WebSocket (shares the same port and server instance)
   const server = http.createServer(app);
   wsServer.attach(server);
 
   // Start stale detection sweep with live WebSocket broadcast
   robotState.startStaleDetection(wsServer.broadcast.bind(wsServer));
 
-  server.listen(PORT, () => {
-    console.log(`[Server] Fleet backend running on http://localhost:${PORT}`);
-    console.log(`[Server] WebSocket available at ws://localhost:${PORT}/ws`);
+  server.listen(PORT, HOST, () => {
+    console.log(`[Server] Fleet backend listening on http://${HOST}:${PORT}`);
+    console.log(`[Server] WebSocket attached and available on /ws`);
     console.log('[Server] In-memory fleet state active');
   });
 

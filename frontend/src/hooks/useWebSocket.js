@@ -1,15 +1,40 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const WS_URL = import.meta.env.VITE_WS_URL || `ws://${window.location.hostname}:3000/ws`;
-const INITIAL_BACKOFF_MS = 200;
+/**
+ * Resolves the WebSocket URL with secure production and local fallback:
+ * 1. Primary: import.meta.env.VITE_WS_URL if explicitly set in the environment.
+ * 2. Safe Fallback:
+ *    - Enforces 'wss://' whenever the frontend is served over HTTPS to avoid Mixed Content errors.
+ *    - Defaults to 'ws://' for local HTTP development (localhost:3000/ws).
+ */
+export function getWebSocketUrl() {
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+
+  const isSecure = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  const protocol = isSecure ? 'wss:' : 'ws:';
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+
+  // Local development default (backend on port 3000)
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return `${protocol}//${hostname}:3000/ws`;
+  }
+
+  // Deployed production fallback with same-host / reverse-proxy
+  const port = typeof window !== 'undefined' && window.location.port ? `:${window.location.port}` : '';
+  return `${protocol}//${hostname}${port}/ws`;
+}
+
+const INITIAL_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30000;
 const BACKOFF_MULTIPLIER = 2;
 
 /**
  * useWebSocket — manages WebSocket connection with exponential backoff reconnection.
  *
- * Returns { robots: Map<id, state>, connectionStatus: 'live'|'reconnecting'|'disconnected' }
- * and an applyUpdate callback for external state management.
+ * Returns { connectionStatus: 'live'|'reconnecting'|'disconnected' }
+ * Invokes onSnapshot and onUpdate callbacks when messages arrive.
  */
 export function useWebSocket(onSnapshot, onUpdate) {
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
@@ -18,19 +43,42 @@ export function useWebSocket(onSnapshot, onUpdate) {
   const reconnectTimerRef = useRef(null);
   const mountedRef = useRef(true);
 
+  // Keep latest callback references without triggering socket re-creation
+  const onSnapshotRef = useRef(onSnapshot);
+  const onUpdateRef = useRef(onUpdate);
+
+  useEffect(() => {
+    onSnapshotRef.current = onSnapshot;
+    onUpdateRef.current = onUpdate;
+  });
+
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
+    // Avoid creating duplicate connections if socket is already connecting or open
+    if (wsRef.current) {
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        setConnectionStatus('live');
+        return;
+      }
+      if (wsRef.current.readyState === WebSocket.CONNECTING) {
+        return;
+      }
+    }
+
+    const wsUrl = getWebSocketUrl();
     setConnectionStatus('reconnecting');
 
     try {
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!mountedRef.current) { ws.close(); return; }
-        console.log('[WS] Connected');
+        if (!mountedRef.current) {
+          ws.close(1000, 'Unmounted');
+          return;
+        }
+        console.log('[WS] Connected to', wsUrl);
         backoffRef.current = INITIAL_BACKOFF_MS;
         setConnectionStatus('live');
       };
@@ -40,34 +88,44 @@ export function useWebSocket(onSnapshot, onUpdate) {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'snapshot') {
-            onSnapshot(msg.robots);
+            onSnapshotRef.current?.(msg.robots);
           } else if (msg.type === 'update') {
-            onUpdate(msg.robot);
+            onUpdateRef.current?.(msg.robot);
           }
-          // 'config' messages are ignored on the main dashboard
+          // 'config' messages are handled where appropriate
         } catch (err) {
           console.error('[WS] Parse error:', err);
         }
       };
 
-      ws.onerror = (err) => {
-        console.warn('[WS] Error:', err);
+      ws.onerror = () => {
+        // Minimal notice to prevent noisy console dump on initial probe/reconnect
+        if (mountedRef.current) {
+          console.warn(`[WS] Connection issue on ${wsUrl} — reconnect scheduled`);
+        }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (!mountedRef.current) return;
-        console.log(`[WS] Closed — reconnecting in ${backoffRef.current}ms`);
+        wsRef.current = null;
+
+        // Code 1000 is intentional normal closure; don't trigger backoff spam if intended
+        if (event.code !== 1000) {
+          console.log(`[WS] Closed (code: ${event.code}) — reconnecting in ${backoffRef.current}ms`);
+        }
+
         setConnectionStatus('reconnecting');
+        clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = setTimeout(() => {
           backoffRef.current = Math.min(backoffRef.current * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
           connect();
         }, backoffRef.current);
       };
     } catch (err) {
-      console.error('[WS] Failed to create WebSocket:', err);
+      console.error('[WS] Failed to initialize WebSocket:', err.message);
       setConnectionStatus('disconnected');
     }
-  }, [onSnapshot, onUpdate]);
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -77,8 +135,22 @@ export function useWebSocket(onSnapshot, onUpdate) {
       mountedRef.current = false;
       clearTimeout(reconnectTimerRef.current);
       if (wsRef.current) {
-        wsRef.current.onclose = null; // prevent reconnect on intentional close
-        wsRef.current.close();
+        const ws = wsRef.current;
+        // Detach listeners so unmount does not trigger error or reconnect loops
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close(1000, 'Component unmounted');
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          // Do not call ws.close() immediately while CONNECTING (which causes Firefox to report connection interrupted)
+          // Instead, wait for the handshake to complete and then close cleanly with 1000
+          ws.onopen = () => {
+            try { ws.close(1000, 'Component unmounted'); } catch {}
+          };
+        }
+        wsRef.current = null;
       }
     };
   }, [connect]);

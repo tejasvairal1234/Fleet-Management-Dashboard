@@ -1,6 +1,24 @@
 import { useState } from 'react';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+/**
+ * Resolves the Backend REST API Base URL:
+ * 1. Primary: import.meta.env.VITE_BACKEND_URL if explicitly configured.
+ * 2. Fallback:
+ *    - Localhost development: http://localhost:3000
+ *    - Production default: window.location.origin
+ */
+function getBackendUrl() {
+  if (import.meta.env.VITE_BACKEND_URL) {
+    return import.meta.env.VITE_BACKEND_URL.replace(/\/+$/, '');
+  }
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:3000';
+  }
+  return typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+}
+
+const BACKEND_URL = getBackendUrl();
 
 export function AdminPanel({ onClose }) {
   const [step, setStep] = useState('auth'); // 'auth' | 'config'
