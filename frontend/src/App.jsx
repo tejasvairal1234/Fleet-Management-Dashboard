@@ -1,122 +1,120 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useState, useCallback, useRef } from 'react';
+import { Header } from './components/Header';
+import { StatsBar } from './components/StatsBar';
+import { RobotList } from './components/RobotList';
+import { SiteMap } from './components/SiteMap';
+import { RobotDetail } from './components/RobotDetail';
+import { TrendChart } from './components/TrendChart';
+import { AdminPanel } from './components/AdminPanel';
+import { useFleetState } from './hooks/useFleetState';
+import { useWebSocket } from './hooks/useWebSocket';
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const [selectedId, setSelectedId] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState(null);
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [chartCollapsed, setChartCollapsed] = useState(false);
+
+  const siteMapRef = useRef(null);
+
+  const { robots, generation, stats, lastUpdate, applySnapshot, applyUpdate } = useFleetState();
+
+  const { connectionStatus } = useWebSocket(
+    useCallback((robotsArr) => applySnapshot(robotsArr), [applySnapshot]),
+    useCallback((robot) => applyUpdate(robot), [applyUpdate])
+  );
+
+  const selectedRobot = selectedId ? robots.get(selectedId) : null;
+
+  const handleSelectRobot = useCallback((id) => {
+    setSelectedId(id);
+    if (id && robots.has(id)) {
+      const r = robots.get(id);
+      if (r && siteMapRef.current?.centerOn) {
+        siteMapRef.current.centerOn(r.x, r.y);
+      }
+    }
+  }, [robots]);
+
+  const handleFocusOnMap = useCallback((x, y) => {
+    if (siteMapRef.current?.centerOn) {
+      siteMapRef.current.centerOn(x, y);
+    }
+  }, []);
+
+  const handleStatFilter = (key) => {
+    const map = {
+      total: null,
+      working: 'working',
+      idle: 'idle',
+      charging: 'charging',
+      attention: 'attention',
+      offline: 'offline',
+    };
+    setStatusFilter(key ? map[key] : null);
+  };
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app-viewport">
+      {/* 1. Header Bar */}
+      <Header
+        connectionStatus={connectionStatus}
+        robotCount={stats.total}
+        lastUpdate={lastUpdate}
+        onAdminClick={() => setShowAdmin(true)}
+      />
 
-      <div className="ticks"></div>
+      {/* 2. KPI Stats Bar */}
+      <StatsBar
+        stats={stats}
+        activeFilter={statusFilter}
+        onFilter={handleStatFilter}
+      />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      {/* 3. Main Workspace Area */}
+      <main className="main-workspace">
+        {/* Left Sidebar */}
+        <RobotList
+          robots={robots}
+          selectedId={selectedId}
+          searchQuery={searchQuery}
+          statusFilter={statusFilter}
+          onSearch={setSearchQuery}
+          onFilter={setStatusFilter}
+          onSelect={handleSelectRobot}
+        />
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+        {/* Center/Right Primary Visual Area: Site Map */}
+        <section className="primary-map-section">
+          <SiteMap
+            ref={siteMapRef}
+            robots={robots}
+            generation={generation}
+            selectedId={selectedId}
+            onSelectRobot={handleSelectRobot}
+          />
+
+          {/* Floating Robot Detail Panel */}
+          {selectedRobot && (
+            <RobotDetail
+              robot={selectedRobot}
+              onClose={() => setSelectedId(null)}
+              onFocusOnMap={handleFocusOnMap}
+            />
+          )}
+        </section>
+      </main>
+
+      {/* 4. Bottom Collapsible Trend Chart Dock */}
+      <TrendChart
+        stats={stats}
+        isCollapsed={chartCollapsed}
+        onToggleCollapse={() => setChartCollapsed(!chartCollapsed)}
+      />
+
+      {/* Admin Modal */}
+      {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
+    </div>
+  );
 }
-
-export default App
