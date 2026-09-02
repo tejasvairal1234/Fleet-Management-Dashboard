@@ -1,14 +1,12 @@
 'use strict';
 const { validate } = require('./validator');
 const robotState = require('../state/robotState');
-const db = require('../db/mongo');
 
 /**
  * Process a single robot event:
- *   1. Validate payload
- *   2. Update in-memory state
+ *   1. Validate payload schema & values
+ *   2. Update in-memory state (with out-of-order protection)
  *   3. Broadcast via WebSocket (injected to avoid circular deps)
- *   4. Async persist to MongoDB (fire-and-forget)
  *
  * Returns { accepted: boolean, errors?: string[] }
  */
@@ -20,7 +18,7 @@ function ingest(payload, broadcast) {
 
   const accepted = robotState.upsert(payload);
   if (!accepted) {
-    // Out-of-order — not an error, just silently skip broadcast/persist
+    // Out-of-order — not a server error, reject to preserve latest state
     return { accepted: false, errors: ['Out-of-order update rejected'] };
   }
 
@@ -30,12 +28,6 @@ function ingest(payload, broadcast) {
   if (typeof broadcast === 'function') {
     broadcast({ type: 'update', robot: currentState });
   }
-
-  // Persist to MongoDB asynchronously — never block on this
-  db.insertEvent(payload).catch((err) => {
-    // Log but do not throw — MongoDB failure must not freeze ingestion
-    console.error('[MongoDB] Failed to persist event:', err.message);
-  });
 
   return { accepted: true };
 }

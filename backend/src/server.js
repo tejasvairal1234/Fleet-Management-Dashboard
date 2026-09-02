@@ -3,16 +3,12 @@ require('dotenv').config();
 const http = require('http');
 const app = require('./app');
 const wsServer = require('./websocket/wsServer');
-const db = require('./db/mongo');
 const robotState = require('./state/robotState');
 const config = require('./config');
 
 const PORT = config.port;
 
 async function main() {
-  // Connect to MongoDB (non-blocking — failure is handled gracefully)
-  await db.connect();
-
   // Create HTTP server and attach WebSocket
   const server = http.createServer(app);
   wsServer.attach(server);
@@ -23,14 +19,13 @@ async function main() {
   server.listen(PORT, () => {
     console.log(`[Server] Fleet backend running on http://localhost:${PORT}`);
     console.log(`[Server] WebSocket available at ws://localhost:${PORT}/ws`);
-    console.log(`[Server] MongoDB: ${db.isConnected() ? 'connected' : 'disconnected (history disabled)'}`);
+    console.log('[Server] In-memory fleet state active');
   });
 
   // Graceful shutdown
   const shutdown = async (signal) => {
     console.log(`\n[Server] ${signal} received — shutting down gracefully...`);
     robotState.stopStaleDetection();
-    await db.close();
     server.close(() => {
       console.log('[Server] HTTP server closed');
       process.exit(0);

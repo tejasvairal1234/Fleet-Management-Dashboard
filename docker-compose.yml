@@ -1,0 +1,44 @@
+version: '3.9'
+
+services:
+  # ── Backend ──────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fleet-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-changeme-admin-token}
+      ROBOT_STALE_TIMEOUT_MS: ${ROBOT_STALE_TIMEOUT_MS:-10000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+
+  # ── Simulator ────────────────────────────────────────────────────────────────
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: fleet-simulator
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:3000
+      FLEET_SIZE: ${FLEET_SIZE:-8}
+      UPDATE_INTERVAL_MS: ${UPDATE_INTERVAL_MS:-1000}
+      PAYLOAD_SIZE: ${PAYLOAD_SIZE:-512}
+    depends_on:
+      - backend
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fleet-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend

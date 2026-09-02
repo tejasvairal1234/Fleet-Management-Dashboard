@@ -2,7 +2,6 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const robotState = require('../state/robotState');
-const db = require('../db/mongo');
 const { ingest, ingestBatch } = require('../ingestion/ingestHandler');
 const wsServer = require('../websocket/wsServer');
 const config = require('../config');
@@ -13,7 +12,7 @@ const router = express.Router();
 
 const ingestLimiter = rateLimit({
   windowMs: 1000,       // 1 second
-  max: 10000,           // allow up to 10k updates/s (scaled for 2000 robots)
+  max: 10000,           // allow up to 10k updates/s (scaled for 2000+ robots)
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests — rate limit exceeded' },
@@ -44,33 +43,14 @@ router.get('/health', (req, res) => {
     uptime: process.uptime(),
     robots: robotState.getAll().length,
     wsClients: wsServer.clientCount(),
-    mongoConnected: db.isConnected(),
     timestamp: Date.now(),
   });
 });
 
-// ── Current state ─────────────────────────────────────────────────────────────
+// ── Current State (In-Memory Map) ─────────────────────────────────────────────
 
 router.get('/robots', (req, res) => {
   res.json(robotState.getAll());
-});
-
-// IMPORTANT: /robots/history/:robotId must be declared BEFORE /robots/:robotId
-// to avoid Express matching "history" as a robotId parameter.
-router.get('/robots/history/:robotId', async (req, res) => {
-  try {
-    const { robotId } = req.params;
-    const { from, to, limit } = req.query;
-    const history = await db.getHistory(robotId, {
-      from: from ? Number(from) : undefined,
-      to: to ? Number(to) : undefined,
-      limit: limit ? Math.min(Number(limit), 10000) : 1000,
-    });
-    res.json(history);
-  } catch (err) {
-    console.error('[Routes] History error:', err.message);
-    res.status(500).json({ error: 'Failed to retrieve history' });
-  }
 });
 
 router.get('/robots/:robotId', (req, res) => {

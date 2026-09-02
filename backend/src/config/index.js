@@ -3,8 +3,6 @@ require('dotenv').config();
 
 const config = {
   port: parseInt(process.env.PORT || '3000', 10),
-  mongoUri: process.env.MONGODB_URI || 'mongodb://localhost:27017',
-  mongoDatabase: process.env.MONGODB_DATABASE || 'fleet',
   adminToken: process.env.ADMIN_TOKEN || 'changeme-admin-token',
   staleTimeoutMs: parseInt(process.env.ROBOT_STALE_TIMEOUT_MS || '10000', 10),
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',
