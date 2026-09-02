@@ -3,111 +3,161 @@
 ## 1. High-Level Architecture Diagram
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                       Autonomous Robot Simulator                       │
-│                           (Node.js Engine)                             │
-│                                                                        │
-│   RobotAgent × N ───► FleetSimulator ───► HTTP POST /ingest           │
-│   (State Machine)      (Orchestrator)      (Batch / Single JSON)       │
-│         ▲                                                              │
-│         └─────────── WebSocket /ws (Config Broadcast) ◄────────────┐   │
-└────────────────────────────────────────────────────────────────────┼───┘
-                                                                     │
-                                                                     │
-                                     ┌───────────────────────────────┘
-                                     │
-                                     ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Backend API Server                              │
-│                       (Node.js / Express)                              │
-│                                                                        │
-│  1. Ingestion Rate Limiter & Body Parser                               │
-│  2. Payload & Boundary Validator (validator.js)                        │
-│  3. Out-of-Order Timestamp Guard (t <= lastAcceptedT dropped)          │
-│  4. In-Memory State Store (Map<robot_id, RobotState>)                  │
-│  5. Background Stale Heartbeat Sweeper (3s cadence)                    │
-│  6. Real-Time WebSocket Engine (wsServer.js)                           │
-│  7. Protected Admin Control Route (POST /config)                       │
-└──────────────────┬─────────────────────────────────────────────────────┘
-                   │
-                   │ WebSocket (/ws)
-                   ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Operations Dashboard                            │
-│                  (React 18 / Vite / HTML5 Canvas)                      │
-│                                                                        │
-│  ├─ Header & Live Heartbeat Counter                                    │
-│  ├─ 6-KPI Summary Metric Bar                                           │
-│  ├─ Filterable Robot Sidebar                                           │
-│  ├─ 60fps HTML5 Canvas Site Map                                        │
-│  ├─ Selected Robot HUD & Focus Tool                                    │
-│  └─ Collapsible Trend Chart Dock (In-Memory Buffer)                    │
-└────────────────────────────────────────────────────────────────────────┘
+                    ┌──────────────────────┐
+                    │   Robot Simulator    │
+                    │   Node.js / JS       │
+                    └──────────┬───────────┘
+                               │
+                         Robot Updates (POST /ingest)
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │      Backend         │
+                    │   Node.js / Express  │
+                    │     WebSocket        │
+                    └──────────┬───────────┘
+                               │
+                         Validate Update (validator.js)
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │   In-Memory Map      │
+                    │   Current State      │
+                    └──────────┬───────────┘
+                               │
+                         Live Broadcast ({ type: "update" })
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │   React Dashboard    │
+                    │     JavaScript       │
+                    └──────────┬───────────┘
+                               │
+                         Rolling Buffer
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Bounded Trend Chart  │
+                    │ (In-Memory Buffer)   │
+                    └──────────────────────┘
 ```
 
 ---
 
-## 2. Complete Event Lifecycle
+## 2. Complete Event Flow
 
-> **From Telemetry Generation to Visual Screen Update**
+The real-time lifecycle from telemetry generation to screen rendering follows these 10 steps:
 
-1. **State Machine Tick:** `RobotAgent.tick(intervalMs)` calculates battery drain/charging, evaluates stochastic status transition probabilities, updates physical coordinates `(x, y)` toward waypoint targets with smooth jitter, and increments monotonic simulation time `t`.
-2. **Batch Dispatch:** `FleetSimulator` aggregates individual robot payloads into a JSON array and transmits via HTTP `POST /ingest` to the backend.
-3. **Ingestion & Validation:** `validator.js` asserts schema integrity: `robot_id` format, `x` in $[0, 900]$, `y` in $[0, 560]$, `battery` in $[0, 100]$, and `status` in valid enum values.
-4. **Out-of-Order Guard:** `robotState.upsert()` queries `lastTimestamps.get(robot_id)`. If incoming `t <= lastAcceptedT`, the update is rejected to prevent state regression.
-5. **In-Memory Cache Update:** The valid state is stored in the $O(1)$ `robotMap`, updating `updatedAt` to current epoch time, clearing `isStale`, and computing `needsAttention`.
-6. **Live WebSocket Broadcast:** `wsServer.broadcast({ type: 'update', robot })` pushes the JSON payload to all connected dashboard clients and simulator config listeners.
-7. **Client Ingestion:** React's `useWebSocket` hook parses the incoming message and updates local state via `applyUpdate(robot)`.
-8. **Visual Rendering:** The Canvas render loop (`requestAnimationFrame`) queries the updated robot coordinates and renders the robot marker, status color glow, and target reticle at 60fps.
-
----
-
-## 3. Comprehensive Failure Scenarios & Self-Healing Behaviors
-
-### 1. Robot Dies Mid-Task (Silent Failure)
-- **Failure:** A robot on mission stops publishing telemetry due to hardware or network failure.
-- **Handling:** The backend's background sweep (`sweepStale`) checks all units every 3 seconds. Once inactivity exceeds `ROBOT_STALE_TIMEOUT_MS` (default 10s), the robot is marked `isStale: true, status: 'offline', needsAttention: true`.
-- **Dashboard Response:** The sweeper broadcasts an immediate `{ type: 'update', robot }` WebSocket message. The dashboard marks the robot offline, retains its last known coordinates on the map, and places it in the Attention list.
-
-### 2. Robot Reconnects / Recovers
-- **Event:** A previously offline robot resumes transmitting telemetry with `t > lastAcceptedT`.
-- **Handling:** `robotState.upsert()` accepts the fresh payload, resets `isStale: false`, updates status to the reported value (e.g. `idle` or `active`), and updates position.
-- **Dashboard Response:** Real-time WebSocket message clears the attention flag and restores live movement.
-
-### 3. Out-of-Order Events
-- **Failure:** Network jitter causes message `t=101` to arrive before delayed message `t=100`.
-- **Handling:** Message `t=101` is accepted and records `lastAcceptedT = 101`. When `t=100` arrives, `100 <= 101` evaluates to true; the payload is rejected with HTTP 400.
-- **Result:** No coordinate or battery regression occurs.
-
-### 4. Late Events (Lagging Telemetry)
-- **Failure:** An update buffered on a lagging cellular link arrives 30 seconds late.
-- **Handling:** Evaluated against `lastAcceptedT`. If older than the current in-memory timestamp, it is discarded. If newer, it updates the state normally.
-
-### 5. Dashboard Disconnects (Browser Client Side)
-- **Failure:** The user's browser loses network connectivity or closes the laptop lid.
-- **Handling:** `useWebSocket` detects `ws.onclose` and transitions UI status badge to `● RECONNECTING...` (Amber).
-- **Auto-Recovery:** An exponential backoff reconnect loop (200ms → 400ms → 800ms ... up to 30s) automatically retries until connection is re-established.
-
-### 6. Dashboard Reconnects
-- **Recovery:** Upon WebSocket `onopen`, the backend automatically transmits a `{ type: 'snapshot', robots: [...] }` payload containing the entire current in-memory fleet state.
-- **Dashboard Response:** `applySnapshot()` atomically replaces local state, ensuring zero data loss or duplicate entries.
-
-### 7. Runtime Fleet Resize / Cadence Modification
-- **Event:** Operator uses Admin Panel or `POST /config` to change fleet size from 8 to 1,000 robots at runtime.
-- **Handling:** Backend updates `runtimeConfig` and broadcasts `{ type: 'config', config }` over WebSocket.
-- **Simulator Response:** The autonomous simulator receives the broadcast and dynamically calls `setFleetSize(1000)` and `setInterval(newMs)` without process restarts or dropped frames.
+1. **Simulator Generates Updates:** Autonomous `RobotAgent` state machines calculate coordinate updates, battery discharge/charge, and status transitions, advancing simulation time $t$.
+2. **Backend Receives Updates:** `FleetSimulator` batches events and posts them via HTTP `POST /ingest` (or individual JSON payloads).
+3. **Backend Validates Payload:** `validator.js` enforces schema types, ensuring $x \in [0, 900]$, $y \in [0, 560]$, $\text{battery} \in [0, 100]$, and `status` is a recognized enum value.
+4. **Backend Checks Timestamp Ordering:** The out-of-order guard compares incoming $t$ against the per-robot `lastTimestamps` record. If $t \le \text{lastAcceptedT}$, the update is rejected to prevent older data from overwriting newer state.
+5. **Valid Updates Update In-Memory Map:** Accepted updates modify the authoritative `Map<robot_id, RobotState>`, updating `updatedAt`, resetting `isStale` to `false`, and computing the `needsAttention` flag.
+6. **Stale/Offline Detection Operates on In-Memory State:** A background interval timer (every 3s) scans the map. Any robot with no updates for $>10\text{s}$ is marked `status: 'offline', isStale: true, needsAttention: true`.
+7. **Backend Broadcasts Live State:** The WebSocket engine (`wsServer.js`) broadcasts `{ type: 'update', robot }` frames to all connected dashboard clients and config listeners.
+8. **React Receives the Update:** The client `useWebSocket` hook parses the incoming message and hands it to `useFleetState`.
+9. **Dashboard Updates UI:** The 60fps HTML5 Canvas map re-renders the robot marker, reticle, and status glow; the sidebar and KPI counters update reactively.
+10. **Trend Data Buffering:** The client appends the current working percentage (`(active + on_mission) / total * 100`) to a bounded rolling buffer (`MAX_BUFFER = 2000`) for the Active Fleet % trend chart.
 
 ---
 
-## 4. Scalability Analysis: "What Would We Change First for a 10x Fleet (10,000+ Robots)?"
+## 3. Major System Components
 
-If the fleet scales by 10x to **10,000+ active robots**:
+### A. Autonomous Robot Simulator (`simulator/`)
+- **`RobotAgent.js`:** Pure JavaScript state machine implementing kinematics, waypoint navigation, battery drain/recharging curves, and stochastic status transitions (`idle`, `active`, `on_mission`, `charging`, `blocked`, `error`, `maintenance`).
+- **`FleetSimulator.js`:** Orchestrator that provisions $N$ agents, manages tick intervals, batches telemetry, and dispatches HTTP requests.
+- **WebSocket Listener:** Connects to the backend WebSocket stream to receive zero-downtime runtime configuration updates (`fleetSize`, `updateIntervalMs`).
 
-1. **WebSocket Delta Frame Coalescing:**
-   - *Current:* 1 WebSocket message per robot update ($1,000\text{ msgs/sec}$ at $1,000$ robots).
-   - *10x Solution:* Buffer incoming updates into 50ms time windows and dispatch a single combined array frame `[{id, x, y, ...}]`, reducing network frame overhead by 95%.
-2. **Canvas Viewport Culling & Level of Detail (LoD):**
-   - *Current:* Canvas renders all robots in the in-memory Map.
-   - *10x Solution:* Only render robots whose coordinates intersect the current canvas viewport bounding box, and cluster dense regions into H3 hexbin density heatmaps when zoomed out.
-3. **Ingestion Partitioning & Worker Clusters:**
-   - Deploy Node.js Cluster mode or distribute `/ingest` endpoints across a load balancer with a Redis / NATS stream message queue.
+### B. Backend Ingestion & Broadcast Engine (`backend/`)
+- **`server.js` & `app.js`:** Express application with security headers, CORS configuration, and rate limiters.
+- **`validator.js`:** Fast, synchronous schema and coordinate boundary validation.
+- **`robotState.js`:** In-memory store wrapping `Map<string, RobotState>`, sequence timestamp tracker, and the background stale heartbeat sweeper.
+- **`wsServer.js`:** WebSocket server on `/ws` handling client connection lifecycles, initial snapshot distribution, and non-blocking broadcasting.
+- **`routes/index.js`:** Public API routes (`GET /health`, `GET /robots`, `GET /robots/:robotId`, `POST /ingest`) and admin-protected routes (`GET /config`, `POST /config`).
+
+### C. React Control Room Dashboard (`frontend/`)
+- **`useWebSocket.js`:** WebSocket hook with exponential backoff reconnects and connection state tracking (`connected`, `reconnecting`, `disconnected`).
+- **`useFleetState.js`:** In-memory local fleet state manager that computes derived KPI metrics and attention counts.
+- **`SiteMap.jsx`:** High-performance HTML5 Canvas renderer executing inside a `requestAnimationFrame` loop for silky 60fps animations with zoom, pan, and unit focus.
+- **`TrendChart.jsx`:** Recharts-based area chart consuming a client-side bounded buffer with selectable time windows (`1m` to `1h`).
+- **`AdminModal.jsx`:** Protected management modal for runtime fleet sizing and cadence tuning.
+
+---
+
+## 4. Why In-Memory State Was Selected
+
+1. **Ultra-Low Latency:** Ingesting, validating, and retrieving current state runs in sub-millisecond $O(1)$ memory operations with zero disk I/O overhead.
+2. **Architectural Simplicity:** Eliminates database daemon dependencies, connection pool tuning, and migration scripts.
+3. **High Throughput:** Avoids database write contention during high-frequency telemetry bursts (handling 1,000+ updates/second effortlessly).
+4. **Frictionless Setup:** Developers can clone and run the application instantly without provisioning local or cloud databases.
+
+---
+
+## 5. Failure Scenarios & Edge Cases
+
+### 1. A Robot Dies During a Mission
+- **Behavior:** The robot hardware halts and abruptly stops transmitting telemetry.
+- **Handling:** The backend's background heartbeat sweeper (`sweepStale`) inspects the in-memory `Map` every 3 seconds. When `Date.now() - robot.updatedAt > 10000ms`, the robot is marked `isStale: true, status: 'offline', needsAttention: true`.
+- **UI Update:** The sweeper emits `{ type: 'update', robot }` over WebSocket. The dashboard updates the robot's badge to `OFFLINE`, highlights it in red, and increments the Attention counter.
+
+### 2. A Robot Stops Sending Updates
+- **Behavior:** Network loss or packet drop causes a temporary telemetry gap.
+- **Handling:** Position is retained at the last known coordinates on the map. If the gap exceeds 10 seconds, the stale detector transitions the robot to `offline`.
+
+### 3. Updates Arrive Late
+- **Behavior:** A delayed telemetry packet reaches the backend after a lag spike.
+- **Handling:** The timestamp $t$ is evaluated against `lastTimestamps.get(robot_id)`. If $t > \text{lastAcceptedT}$, the state is updated normally; if $t \le \text{lastAcceptedT}$, it is discarded.
+
+### 4. Updates Arrive Out of Order
+- **Behavior:** Due to network routing fluctuations, update $t=50$ arrives after update $t=51$.
+- **Handling:** Update $t=51$ was already accepted (`lastAcceptedT = 51`). When $t=50$ arrives, `50 <= 51` evaluates to true; the backend rejects it with HTTP 400 (`Out-of-order update rejected`).
+- **Result:** Newer coordinates and status are preserved without regression.
+
+### 5. A Robot Reconnects
+- **Behavior:** An offline robot resumes connectivity and transmits a fresh packet with $t > \text{lastAcceptedT}$.
+- **Handling:** `robotState.upsert()` accepts the update, clears `isStale: false`, sets the newly reported status (e.g. `active`), and updates `updatedAt`.
+- **UI Update:** The live WebSocket message restores normal status rendering and clears the alert ring.
+
+### 6. The Dashboard Disconnects
+- **Behavior:** The client browser loses internet connection or closes the laptop lid.
+- **Handling:** `useWebSocket` catches the socket termination and updates the status indicator to `● RECONNECTING...`.
+- **Recovery:** An exponential backoff loop (200ms → 400ms → 800ms ... up to 30s) automatically retries until connectivity returns.
+
+### 7. The Dashboard Reconnects
+- **Behavior:** The browser establishes a fresh WebSocket connection.
+- **Handling:** The backend immediately sends `{ type: 'snapshot', robots: [...] }` containing the complete, authoritative in-memory fleet state.
+- **UI Update:** `useFleetState.applySnapshot()` atomically overwrites local state, instantly synchronizing all robot coordinates and statuses.
+
+### 8. The Backend Restarts
+- **Behavior:** The Node.js backend process is killed and restarted.
+- **Handling:** The in-memory `Map` is initialized empty. The frontend automatically reconnects via its backoff loop.
+- **State Recovery:** As the continuous simulator sends its next tick (within 1 second), the in-memory `Map` repopulates and broadcasts the new state to all clients.
+
+---
+
+## 6. Scaling 10x (10,000+ Robots)
+
+Scaling from the tested 2,000-robot threshold to **10,000+ active robots** requires addressing several architectural bottlenecks:
+
+### 1. In-Memory State Limitations & Horizontal Clustering
+- **Current:** Single Node.js process holds the authoritative state in memory.
+- **10x Requirement:** A single process cannot handle tens of thousands of concurrent connections. Horizontally scaling across multiple backend instances requires a shared distributed state or event bus (e.g., **Redis Pub/Sub**, **NATS**, or **Apache Kafka**) so all instances observe identical fleet state.
+
+### 2. WebSocket Fan-Out & Message Coalescing
+- **Current:** Dispatches 1 individual JSON WebSocket message per robot update ($10,000\text{ msgs/s}$ at $10,000$ robots).
+- **10x Requirement:** Implement delta batching—coalescing updates into 50ms time windows and broadcasting a single array payload `[{ id, x, y, status }, ...]`, cutting network frame overhead by 90%+.
+
+### 3. CPU & Memory Utilization
+- **Backend:** Validation and JSON parsing for 10,000 req/sec will saturate a single Node.js event loop thread. Utilize the Node.js `cluster` module or a reverse proxy load balancer (Nginx / Envoy) distributing traffic across CPU cores.
+- **Memory:** 10,000 robot records require $\sim 50\text{ MB}$ of memory—heap memory remains low, but garbage collection pause times must be monitored.
+
+### 4. Simulator Load
+- **Current:** A single simulator process runs all robot state machines sequentially in an event loop tick.
+- **10x Requirement:** Partition simulated robots across worker threads (`worker_threads`) or multiple simulator container instances.
+
+### 5. Frontend Canvas Rendering & Culling
+- **Current:** Canvas iterates and renders all robots on screen.
+- **10x Requirement:** Implement **Spatial Viewport Culling** (only rendering robots within the visible camera rectangle) and **Level-of-Detail (LoD) Clustering** (rendering dense clusters as aggregated heatmaps or hexbins when zoomed out).
+
+### 6. Bounded Trend Storage
+- Client-side trend buffer must maintain its strict cap (`MAX_BUFFER = 2000`) and subsample older points to prevent browser memory bloat during prolonged operator sessions.
