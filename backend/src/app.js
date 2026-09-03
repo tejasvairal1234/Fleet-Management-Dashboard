@@ -1,41 +1,59 @@
-'use strict';
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const config = require('./config');
-const routes = require('./routes');
+﻿/**
+ * app.js
+ * Express application setup.
+ */
+
+const express = require("express");
+const helmet  = require("helmet");
+const cors    = require("cors");
+const rateLimit = require("express-rate-limit");
+
+const config = require("./config/config");
+const logger = require("./utils/logger");
+const robotRoutes     = require("./routes/robotRoutes");
+const simulatorRoutes = require("./routes/simulatorRoutes");
+const { errorHandler, notFound } = require("./middleware/errorHandler");
+const fleetService    = require("./services/fleetService");
+const wsServer        = require("./websocket/websocketServer");
 
 const app = express();
 
-// ── Middleware ────────────────────────────────────────────────────────────────
-
+// Security
+app.use(helmet());
 app.use(cors({
-  origin: config.corsOrigin === '*' ? '*' : config.corsOrigin.split(',').map(s => s.trim()),
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: config.corsOrigin,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "X-Admin-Key"],
 }));
 
-app.use(express.json({ limit: '10mb' }));
-
-// Simple request logger in development
-if (process.env.NODE_ENV !== 'test') {
-  app.use((req, res, next) => {
-    if (req.path !== '/health') {
-      console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-    }
-    next();
-  });
-}
-
-// ── Routes ────────────────────────────────────────────────────────────────────
-
-app.use('/', routes);
-
-// ── Error handler ─────────────────────────────────────────────────────────────
-
-app.use((err, req, res, _next) => {
-  console.error('[App] Unhandled error:', err.message);
-  res.status(500).json({ error: 'Internal server error' });
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 1000,
+  message: { error: true, message: "Too many requests" },
 });
+app.use(limiter);
+
+// Body parsing
+app.use(express.json({ limit: "1mb" }));
+
+// Health check
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    fleetSize: fleetService.getAllRobots().length,
+    connectedClients: wsServer.getClientCount(),
+    uptime: process.uptime(),
+  });
+});
+
+// Routes
+app.use("/api/robots",    robotRoutes);
+app.use("/api/simulator", simulatorRoutes);
+
+// 404 & Error handlers (must be last)
+app.use(notFound);
+app.use(errorHandler);
 
 module.exports = app;
