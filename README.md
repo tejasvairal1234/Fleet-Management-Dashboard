@@ -1,7 +1,7 @@
 ﻿# Fleet Management Dashboard
 
-Dashboard: [http://localhost:5173](http://localhost:5173)  
-Backend: [http://localhost:5000](http://localhost:5000)
+Dashboard: [https://fleet-management-dashboard-frontend.vercel.app/](https://fleet-management-dashboard-frontend.vercel.app/)  
+Backend: [https://fleet-management-dashboard.onrender.com](https://fleet-management-dashboard.onrender.com)
 
 > A complete production-quality real-time operations control center and robot fleet management system for autonomous warehouse robots.
 
