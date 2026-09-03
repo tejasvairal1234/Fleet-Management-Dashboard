@@ -2,6 +2,7 @@
 
 Dashboard: [https://fleet-management-dashboard-frontend.vercel.app/](https://fleet-management-dashboard-frontend.vercel.app/)  
 Backend: [https://fleet-management-dashboard.onrender.com](https://fleet-management-dashboard.onrender.com)
+Admin API Key: 5c739bc1bed3067de8e6fb9c76ae594c35b5985f1e785502249f2e3053f4025b
 
 > A complete production-quality real-time operations control center and robot fleet management system for autonomous warehouse robots.
 
