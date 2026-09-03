@@ -1,4 +1,4 @@
-﻿// components/Robots/RobotDetailPanel.jsx
+import { useState, useEffect } from "react";
 import { useFleet } from "../../hooks/useFleet";
 import { STATUS_COLORS, STATUS_LABELS, needsAttention } from "../../utils/status";
 import { formatBattery, formatCoords, formatTimeAgo, formatRobotType } from "../../utils/format";
@@ -10,12 +10,27 @@ function getBatteryColor(b) {
 }
 
 export function RobotDetailPanel({ onFocus }) {
-  const { robots, selectedRobotId, setSelectedRobot } = useFleet();
+  const { robots, selectedRobotId, setSelectedRobot, focusRobot, focusedRobotId } = useFleet();
+  const [justFocused, setJustFocused] = useState(false);
+
+  // Reset justFocused if selected robot changes
+  useEffect(() => {
+    setJustFocused(false);
+  }, [selectedRobotId]);
 
   if (!selectedRobotId) return null;
 
   const robot = robots.find((r) => r.robot_id === selectedRobotId);
   if (!robot) return null;
+
+  const handleFocusClick = () => {
+    focusRobot(robot.robot_id);
+    onFocus?.(robot.robot_id);
+    setJustFocused(true);
+    setTimeout(() => {
+      setJustFocused(false);
+    }, 2000);
+  };
 
   const statusColor = STATUS_COLORS[robot.status] || "#6b7280";
   const battColor   = getBatteryColor(robot.battery);
@@ -25,6 +40,7 @@ export function RobotDetailPanel({ onFocus }) {
 
   const connState = isOffline ? "Stale / Offline" : "Live";
   const heartbeat = robot.last_seen ? formatTimeAgo(robot.last_seen) : "Unknown";
+  const isCurrentlyFocused = focusedRobotId === robot.robot_id;
 
   return (
     <div className="robot-detail-panel">
@@ -34,12 +50,22 @@ export function RobotDetailPanel({ onFocus }) {
           <div className="detail-robot-type">{formatRobotType(robot.robot_type)}</div>
         </div>
         <div className="detail-actions">
-          <button className="focus-btn" onClick={() => onFocus?.(robot.robot_id)}>
-            ◎ Focus
+          <button
+            className={`focus-btn ${justFocused ? "focused" : ""}`}
+            onClick={handleFocusClick}
+            title={`Focus map on ${robot.robot_id}`}
+          >
+            {justFocused ? "✓ Focused" : "◎ Focus"}
           </button>
-          <button className="close-btn" onClick={() => setSelectedRobot(null)}>×</button>
+          <button className="close-btn" onClick={() => setSelectedRobot(null)} title="Deselect">×</button>
         </div>
       </div>
+
+      {(justFocused || isCurrentlyFocused) && (
+        <div className="detail-focused-banner">
+          ✓ Focused on {robot.robot_id}
+        </div>
+      )}
 
       <div
         className="detail-status-badge"

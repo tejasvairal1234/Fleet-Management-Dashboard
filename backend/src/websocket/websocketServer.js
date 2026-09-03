@@ -1,4 +1,4 @@
-﻿/**
+/**
  * websocketServer.js
  * Manages all dashboard WebSocket clients.
  *
@@ -105,6 +105,25 @@ function broadcastRobotUpdate(robot) {
 }
 
 /**
+ * Broadcast a snapshot of all robots to all connected clients.
+ */
+function broadcastSnapshot(snapshot) {
+  const payload = JSON.stringify({ type: "snapshot", robots: snapshot });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload, (err) => {
+        if (err) {
+          clients.delete(ws);
+          logger.debug(`Removed dead WS client: ${err.message}`);
+        }
+      });
+    } else {
+      clients.delete(ws);
+    }
+  }
+}
+
+/**
  * Send to a single client safely.
  */
 function safeSend(ws, data) {
@@ -119,4 +138,5 @@ function getClientCount() {
   return clients.size;
 }
 
-module.exports = { attach, getClientCount };
+module.exports = { attach, getClientCount, broadcastSnapshot };
+

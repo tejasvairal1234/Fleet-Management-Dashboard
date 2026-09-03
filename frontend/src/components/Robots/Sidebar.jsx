@@ -1,4 +1,4 @@
-﻿// components/Robots/Sidebar.jsx
+// components/Robots/Sidebar.jsx
 import { useFleet } from "../../hooks/useFleet";
 import { useRobotFilters } from "../../hooks/useRobotFilters";
 import { STATUS_COLORS, STATUS_LABELS, needsAttention } from "../../utils/status";
@@ -38,6 +38,7 @@ const RobotRow = memo(function RobotRow({ robot, selected, onSelect }) {
           <span className="robot-type">{(robot.robot_type || "").toUpperCase()}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          {selected && <span className="selected-badge">SELECTED</span>}
           {attn && <span className="attn-badge">ATTN</span>}
           <span className="robot-status-label" style={{ color }}>
             {STATUS_LABELS[robot.status] || robot.status}

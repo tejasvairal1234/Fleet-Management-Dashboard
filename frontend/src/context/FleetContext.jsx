@@ -1,4 +1,4 @@
-﻿// context/FleetContext.jsx
+// context/FleetContext.jsx
 import { createContext, useReducer, useCallback, useRef, useEffect } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 
@@ -42,6 +42,8 @@ function uiReducer(state, patch) {
 
 const INITIAL_UI = {
   selectedRobotId:  null,
+  focusedRobotId:   null,
+  focusTimestamp:   0,
   searchTerm:       "",
   filter:           "all",
   connectionStatus: "reconnecting",
@@ -63,7 +65,13 @@ export function FleetProvider({ children }) {
     dispatchRobots({ type: "SNAPSHOT", robots });
     lastUpdateRef.current = Date.now();
     dispatchUi({ lastUpdateTime: Date.now() });
-  }, []);
+
+    // If currently selected robot is not present in new snapshot, clear selection
+    const robotIds = new Set(robots.map((r) => r.robot_id));
+    if (uiState.selectedRobotId && !robotIds.has(uiState.selectedRobotId)) {
+      dispatchUi({ selectedRobotId: null, focusedRobotId: null });
+    }
+  }, [uiState.selectedRobotId]);
 
   const handleRobotUpdate = useCallback((robot) => {
     dispatchRobots({ type: "ROBOT_UPDATE", robot });
@@ -106,7 +114,20 @@ export function FleetProvider({ children }) {
     trendData,
     ...uiState,
     dispatchUi,
-    setSelectedRobot: (id)     => dispatchUi({ selectedRobotId: id }),
+    setSelectedRobot: (id) => {
+      dispatchUi({
+        selectedRobotId: id,
+        ...(id !== uiState.selectedRobotId ? { focusedRobotId: null } : {}),
+      });
+    },
+    focusRobot: (id) => {
+      dispatchUi({
+        selectedRobotId: id,
+        focusedRobotId: id,
+        focusTimestamp: Date.now(),
+      });
+    },
+    clearFocus:       ()       => dispatchUi({ focusedRobotId: null }),
     setSearch:        (term)   => dispatchUi({ searchTerm: term }),
     setFilter:        (filter) => dispatchUi({ filter }),
     setChartWindow:   (w)      => dispatchUi({ chartWindow: w }),

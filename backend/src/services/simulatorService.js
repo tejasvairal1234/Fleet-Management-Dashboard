@@ -1,4 +1,4 @@
-﻿/**
+/**
  * simulatorService.js
  * Bridges the robot simulator to the fleet service ingestion layer.
  * Acts as the "ingestion pipeline" for simulator-generated events.
@@ -6,6 +6,7 @@
 
 const simulator = require("../simulator/robotSimulator");
 const fleetService = require("./fleetService");
+const wsServer = require("../websocket/websocketServer");
 const logger = require("../utils/logger");
 
 let running = false;
@@ -32,6 +33,7 @@ function stop() {
 function restart(newConfig) {
   fleetService.clearFleet();
   simulator.restart(newConfig);
+  wsServer.broadcastSnapshot(fleetService.getSnapshot());
   logger.info("Simulator service restarted", newConfig);
 }
 

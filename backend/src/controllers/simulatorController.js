@@ -1,4 +1,4 @@
-﻿/**
+/**
  * simulatorController.js
  * Admin endpoints for simulator configuration.
  */
@@ -12,7 +12,13 @@ const logger = require("../utils/logger");
 function getConfig(req, res) {
   const cfg = simulatorService.getConfig();
   const status = simulatorService.getStatus();
-  res.json({ ...cfg, ...status });
+  res.json({
+    fleetSize: cfg.fleetSize,
+    updateIntervalMs: cfg.updateIntervalMs,
+    running: status.running,
+    activeRobots: status.fleetSize,
+    tick: status.tick,
+  });
 }
 
 /**
@@ -35,7 +41,11 @@ function updateConfig(req, res) {
   }
 
   if (errors.length > 0) {
-    return res.status(400).json({ error: true, messages: errors });
+    return res.status(400).json({
+      error: true,
+      message: errors.join(", "),
+      messages: errors,
+    });
   }
 
   const newConfig = {};

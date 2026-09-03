@@ -1,4 +1,4 @@
-﻿/**
+/**
  * robotSimulator.js
  * Central simulation loop - one setInterval drives ALL robots.
  * Scales to 1000+ robots without creating N timers.
@@ -105,15 +105,13 @@ function start(eventCallback) {
  */
 function restart(newConfig) {
   stop();
-  if (newConfig.fleetSize)        runtimeConfig.fleetSize        = newConfig.fleetSize;
-  if (newConfig.updateIntervalMs) runtimeConfig.updateIntervalMs = newConfig.updateIntervalMs;
+  if (newConfig.fleetSize !== undefined)        runtimeConfig.fleetSize        = newConfig.fleetSize;
+  if (newConfig.updateIntervalMs !== undefined) runtimeConfig.updateIntervalMs = newConfig.updateIntervalMs;
 
-  // Brief pause before restart
-  setTimeout(() => {
-    simulationInterval = setInterval(tick, runtimeConfig.updateIntervalMs);
-    initRobots();
-    logger.info(`Simulator restarted: ${runtimeConfig.fleetSize} robots @ ${runtimeConfig.updateIntervalMs}ms`);
-  }, 200);
+  initRobots();
+  tick();
+  simulationInterval = setInterval(tick, runtimeConfig.updateIntervalMs);
+  logger.info(`Simulator restarted: ${runtimeConfig.fleetSize} robots @ ${runtimeConfig.updateIntervalMs}ms`);
 }
 
 /**

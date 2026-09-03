@@ -1,4 +1,4 @@
-﻿// components/Map/CanvasMap.jsx
+// components/Map/CanvasMap.jsx
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useFleet } from "../../hooks/useFleet";
 import { STATUS_COLORS, STATUS_GLOW, STATUS_LABELS, needsAttention } from "../../utils/status";
@@ -7,13 +7,16 @@ const DEFAULT_SITE_WIDTH  = 900;
 const DEFAULT_SITE_HEIGHT = 560;
 
 export function CanvasMap({ onRobotClick }) {
-  const { robots, selectedRobotId } = useFleet();
+  const { robots, selectedRobotId, focusedRobotId, focusTimestamp, clearFocus } = useFleet();
 
   const containerRef    = useRef(null);
   const canvasRef       = useRef(null);
   const mapImageRef     = useRef(null);
   const siteWidthRef    = useRef(DEFAULT_SITE_WIDTH);
   const siteHeightRef   = useRef(DEFAULT_SITE_HEIGHT);
+  const robotsRef       = useRef(robots);
+  robotsRef.current     = robots;
+  const pendingFocusRef = useRef(null);
 
   const [imageLoaded, setImageLoaded]       = useState(false);
   const [zoomDisplay, setZoomDisplay]       = useState(100);
@@ -143,7 +146,8 @@ export function CanvasMap({ onRobotClick }) {
 
   const handleReset = useCallback(() => {
     fitToSite();
-  }, [fitToSite]);
+    clearFocus?.();
+  }, [fitToSite, clearFocus]);
 
   // Wheel zoom (non-passive to prevent page scroll)
   useEffect(() => {
@@ -250,29 +254,58 @@ export function CanvasMap({ onRobotClick }) {
     }
   }, [handleCanvasClick, hoveredRobotId]);
 
-  // Focus on selected robot: center robot and zoom in
-  useEffect(() => {
-    if (!selectedRobotId || !containerRef.current) return;
-    const robot = robots.find((r) => r.robot_id === selectedRobotId);
+  // Perform focus: center robot in viewport at 150% zoom
+  const performFocus = useCallback((targetRobotId) => {
+    if (!targetRobotId || !containerRef.current) return;
+    const robot = robotsRef.current.find((r) => r.robot_id === targetRobotId);
     if (!robot) return;
 
-    const w = containerRef.current.clientWidth;
-    const h = containerRef.current.clientHeight;
+    const container = containerRef.current;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
     if (w <= 0 || h <= 0) return;
 
     const baseFit = transformRef.current.baseFitScale || 1;
-    const targetZoom = Math.max(transformRef.current.zoomLevel, 1.8);
+    const targetZoom = 1.5;
     const targetScale = baseFit * targetZoom;
+
+    // Viewport center
+    const viewportCenterX = w / 2;
+    const viewportCenterY = h / 2;
+
+    // Center robot: screenX = robot.x * scale + ox = viewportCenterX
+    const newOffsetX = viewportCenterX - robot.x * targetScale;
+    const newOffsetY = viewportCenterY - robot.y * targetScale;
 
     transformRef.current = {
       ...transformRef.current,
       scale: targetScale,
-      offsetX: w / 2 - robot.x * targetScale,
-      offsetY: h / 2 - robot.y * targetScale,
+      offsetX: newOffsetX,
+      offsetY: newOffsetY,
       zoomLevel: targetZoom,
     };
     setZoomDisplay(Math.round(targetZoom * 100));
-  }, [selectedRobotId, robots]);
+  }, []);
+
+  // One-time focus triggered on focusTimestamp change
+  useEffect(() => {
+    if (!focusedRobotId || !focusTimestamp) return;
+
+    if (!imageLoaded || !transformRef.current.initialFitDone) {
+      pendingFocusRef.current = focusedRobotId;
+      return;
+    }
+
+    performFocus(focusedRobotId);
+  }, [focusTimestamp, focusedRobotId, imageLoaded, performFocus]);
+
+  // If a pending focus existed before initial fit/load, run it now
+  useEffect(() => {
+    if (imageLoaded && transformRef.current.initialFitDone && pendingFocusRef.current) {
+      performFocus(pendingFocusRef.current);
+      pendingFocusRef.current = null;
+    }
+  }, [imageLoaded, performFocus]);
 
   // Continuous Canvas render loop
   useEffect(() => {
@@ -318,12 +351,18 @@ export function CanvasMap({ onRobotClick }) {
           ctx.lineWidth   = 1.5;
           ctx.strokeRect(ox, oy, sw * s, sh * s);
 
-          // 3. Draw Robots
+          // 3. Draw Robots: separate non-selected from selected so selected is always drawn on top!
           const totalRobots   = robots.length;
           const showAllLabels = totalRobots <= 100;
+          let selectedRobotObj = null;
 
           for (let i = 0; i < totalRobots; i++) {
             const robot = robots[i];
+            if (robot.robot_id === selectedRobotId) {
+              selectedRobotObj = robot;
+              continue;
+            }
+
             const rx = robot.x * s + ox;
             const ry = robot.y * s + oy;
 
@@ -332,32 +371,24 @@ export function CanvasMap({ onRobotClick }) {
               continue;
             }
 
-            const isSelected = robot.robot_id === selectedRobotId;
             const isHovered  = robot.robot_id === hoveredRobotId;
             const attn       = needsAttention(robot);
             const color      = STATUS_COLORS[robot.status] || "#94a3b8";
             const glow       = STATUS_GLOW[robot.status]   || "rgba(148, 163, 184, 0.4)";
-
-            const markerRadius = isSelected ? 7 : (isHovered ? 6 : 5);
+            const markerRadius = isHovered ? 6 : 5;
 
             ctx.save();
 
-            // Glow / Pulse Halo
-            if (isSelected || isHovered || attn) {
+            // Glow
+            if (isHovered || attn) {
               ctx.beginPath();
-              ctx.arc(rx, ry, markerRadius + (isSelected ? 5 : 3), 0, Math.PI * 2);
-              ctx.fillStyle = isSelected ? "rgba(255, 255, 255, 0.35)" : glow;
+              ctx.arc(rx, ry, markerRadius + 3, 0, Math.PI * 2);
+              ctx.fillStyle = glow;
               ctx.fill();
             }
 
-            // Outer ring
-            if (isSelected) {
-              ctx.beginPath();
-              ctx.arc(rx, ry, markerRadius + 3, 0, Math.PI * 2);
-              ctx.strokeStyle = "#ffffff";
-              ctx.lineWidth   = 2;
-              ctx.stroke();
-            } else if (attn) {
+            // Attention ring
+            if (attn) {
               ctx.beginPath();
               ctx.arc(rx, ry, markerRadius + 2, 0, Math.PI * 2);
               ctx.strokeStyle = "#f59e0b";
@@ -378,11 +409,9 @@ export function CanvasMap({ onRobotClick }) {
             ctx.fill();
 
             // Label rendering
-            const shouldShowLabel = showAllLabels || isSelected || isHovered || attn;
+            const shouldShowLabel = showAllLabels || isHovered || attn;
             if (shouldShowLabel && z >= 0.45) {
-              ctx.font = isSelected
-                ? "bold 10px 'JetBrains Mono', monospace"
-                : "9px 'JetBrains Mono', monospace";
+              ctx.font = "9px 'JetBrains Mono', monospace";
               ctx.textAlign    = "center";
               ctx.textBaseline = "bottom";
 
@@ -390,23 +419,96 @@ export function CanvasMap({ onRobotClick }) {
               const textW = ctx.measureText(text).width;
               const labelY = ry - markerRadius - 3;
 
-              // Label backdrop pill
               ctx.fillStyle = "rgba(7, 11, 20, 0.85)";
               ctx.fillRect(rx - textW / 2 - 3, labelY - 11, textW + 6, 12);
 
-              if (isSelected) {
-                ctx.strokeStyle = "#3b82f6";
-                ctx.lineWidth   = 1;
-                ctx.strokeRect(rx - textW / 2 - 3, labelY - 11, textW + 6, 12);
-                ctx.fillStyle   = "#ffffff";
-              } else if (attn) {
-                ctx.fillStyle   = "#f59e0b";
-              } else {
-                ctx.fillStyle   = "#e2e8f0";
-              }
-
+              ctx.fillStyle = attn ? "#f59e0b" : "#e2e8f0";
               ctx.fillText(text, rx, labelY);
             }
+
+            ctx.restore();
+          }
+
+          // 4. Draw Selected Robot ON TOP of all others
+          if (selectedRobotObj) {
+            const rx = selectedRobotObj.x * s + ox;
+            const ry = selectedRobotObj.y * s + oy;
+            const color = STATUS_COLORS[selectedRobotObj.status] || "#94a3b8";
+            const markerRadius = 8.5;
+
+            // Subtle professional animation
+            const now = performance.now();
+            const pulse = (Math.sin(now / 220) + 1) / 2; // 0 to 1 smooth oscillation
+
+            ctx.save();
+
+            // Soft expanding pulse halo
+            ctx.beginPath();
+            ctx.arc(rx, ry, markerRadius + 8 + pulse * 6, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(59, 130, 246, ${0.16 + pulse * 0.16})`;
+            ctx.fill();
+
+            // Bright blue outer ring
+            ctx.beginPath();
+            ctx.arc(rx, ry, markerRadius + 4, 0, Math.PI * 2);
+            ctx.strokeStyle = "#38bdf8";
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            // Crisp white inner accent ring
+            ctx.beginPath();
+            ctx.arc(rx, ry, markerRadius + 1.5, 0, Math.PI * 2);
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // Robot Circle Body
+            ctx.beginPath();
+            ctx.arc(rx, ry, markerRadius, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+
+            // Solid high-contrast core
+            ctx.beginPath();
+            ctx.arc(rx, ry, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fill();
+
+            // Selected Robot Label (Top pill)
+            ctx.font = "bold 11px 'JetBrains Mono', monospace";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+
+            const text = selectedRobotObj.robot_id;
+            const textW = ctx.measureText(text).width;
+            const pillW = Math.max(textW + 16, 44);
+            const labelY = ry - markerRadius - 8;
+
+            ctx.fillStyle = "rgba(7, 11, 20, 0.95)";
+            ctx.fillRect(rx - pillW / 2, labelY - 15, pillW, 16);
+            ctx.strokeStyle = "#38bdf8";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(rx - pillW / 2, labelY - 15, pillW, 16);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.fillText(text, rx, labelY - 3);
+
+            // Sub-indicator pill: ◉ SELECTED or ◉ FOCUSED
+            ctx.font = "bold 8.5px 'JetBrains Mono', monospace";
+            ctx.textBaseline = "top";
+            const isFocused = focusedRobotId === selectedRobotObj.robot_id;
+            const subText = isFocused ? "◉ FOCUSED" : "◉ SELECTED";
+            const subW = ctx.measureText(subText).width;
+            const subY = ry + markerRadius + 5;
+
+            ctx.fillStyle = "rgba(7, 11, 20, 0.92)";
+            ctx.fillRect(rx - subW / 2 - 4, subY, subW + 8, 12);
+            ctx.strokeStyle = isFocused ? "#38bdf8" : "rgba(147, 197, 253, 0.6)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(rx - subW / 2 - 4, subY, subW + 8, 12);
+
+            ctx.fillStyle = isFocused ? "#38bdf8" : "#93c5fd";
+            ctx.fillText(subText, rx, subY + 2);
 
             ctx.restore();
           }
@@ -419,7 +521,7 @@ export function CanvasMap({ onRobotClick }) {
 
     animId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animId);
-  }, [robots, selectedRobotId, hoveredRobotId]);
+  }, [robots, selectedRobotId, hoveredRobotId, focusedRobotId]);
 
   return (
     <div
@@ -431,8 +533,25 @@ export function CanvasMap({ onRobotClick }) {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
+      {/* Map loading overlay if image not ready */}
+      {!imageLoaded && (
+        <div className="map-loading-overlay">
+          <div className="map-loading-spinner" />
+          <span>Map loading...</span>
+        </div>
+      )}
+
       {/* Hardware-accelerated Canvas for layout and robots */}
       <canvas ref={canvasRef} className="map-canvas" />
+
+      {/* Focused Robot Banner badge */}
+      {focusedRobotId && (
+        <div className="map-focus-badge">
+          <span className="focus-badge-pulse" />
+          <span className="focus-badge-text">FOCUSED ON {focusedRobotId}</span>
+          <button className="focus-badge-close" onClick={clearFocus} title="Clear Focus">×</button>
+        </div>
+      )}
 
       {/* Map controls */}
       <div className="map-controls">
@@ -468,3 +587,4 @@ export function CanvasMap({ onRobotClick }) {
 }
 
 export default CanvasMap;
+
